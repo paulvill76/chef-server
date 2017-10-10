@@ -1,0 +1,264 @@
+diff --git a/src/oc_erchef/apps/chef_db/itest/chef_sql_users.erl b/src/oc_erchef/apps/chef_db/itest/chef_sql_users.erl
+index 93bc80328..edc0976da 100644
+--- a/src/oc_erchef/apps/chef_db/itest/chef_sql_users.erl
++++ b/src/oc_erchef/apps/chef_db/itest/chef_sql_users.erl
+@@ -80,7 +80,7 @@ chef_user_record(AzId, _Admin) ->
+ 
+ insert_user_data() ->
+     Users = [make_user(<<"user01">>), make_user(<<"user02">>)],
+-    Expected = lists:duplicate(length(Users), {ok,[[{<<"add_user">>,<<>>}]]}),
++    Expected = lists:duplicate(length(Users), {ok, 1}),
+     Results = [itest_util:create_record(User) || User <- Users],
+     ?assertEqual(Expected, Results).
+ 
+@@ -88,13 +88,13 @@ fetch_user_data() ->
+     Expected = make_user(<<"user03">>),
+     Username = Expected#chef_user.username,
+     %% Make sure client create succeeds
+-    ?assertEqual({ok,[[{<<"add_user">>,<<>>}]]}, itest_util:create_record(Expected)),
++    ?assertEqual({ok, 1}, itest_util:create_record(Expected)),
+     Result = chef_db:fetch(#chef_user{username = Username}, chef_db:make_context(?API_MIN_VER, <<"ABCD">>)),
+     ?assertEqual(Expected, Result).
+ 
+ fetch_user_list() ->
+     Users = [make_user(<<"user04">>), make_user(<<"user05">>)],
+-    CreatedResults = lists:duplicate(length(Users), {ok,[[{<<"add_user">>,<<>>}]]}),
++    CreatedResults = lists:duplicate(length(Users), {ok, 1}),
+     Created = [itest_util:create_record(User) || User <- Users ],
+     ?assertEqual(CreatedResults, Created),
+ 
+@@ -104,7 +104,7 @@ fetch_user_list() ->
+ 
+ delete_user_data() ->
+     User = make_user(<<"user06">>),
+-    ?assertEqual({ok,[[{<<"add_user">>,<<>>}]]}, itest_util:create_record(User)),
++    ?assertEqual({ok, 1}, itest_util:create_record(User)),
+     Result = itest_util:delete_record(User),
+     ?assertEqual({ok, 1}, Result),
+     Username = User#chef_user.username,
+@@ -113,7 +113,7 @@ delete_user_data() ->
+ 
+ update_user_data() ->
+     User = make_user(<<"user07">>),
+-    ?assertEqual({ok,[[{<<"add_user">>,<<>>}]]}, itest_util:create_record(User)),
++    ?assertEqual({ok, 1}, itest_util:create_record(User)),
+ 
+     %% Check that public key we inserted is correct
+     Username = User#chef_user.username,
+@@ -123,7 +123,7 @@ update_user_data() ->
+     %% Update public key
+     UpdatedUserData = User#chef_user{ public_key = ?OTHER_PUBLIC_KEY },
+     Result = itest_util:update_record(UpdatedUserData),
+-    ?assertEqual(ok, Result),
++    ?assertEqual({ok, 1}, Result),
+ 
+     %% Did the public key really update?
+     PersistedUser = chef_db:fetch(#chef_user{username = Username}, chef_db:make_context(?API_MIN_VER, <<"ABCD">>)),
+@@ -134,6 +134,6 @@ update_user_data() ->
+ 
+ count_admin_users() ->
+     User = make_admin_user(<<"user08">>),
+-    ?assertEqual({ok,[[{<<"add_user">>,<<>>}]]}, itest_util:create_record(User)),
++    ?assertEqual({ok, 1}, itest_util:create_record(User)),
+     User2 = make_admin_user(<<"user09">>),
+-    ?assertEqual({ok,[[{<<"add_user">>,<<>>}]]}, itest_util:create_record(User2)).
++    ?assertEqual({ok, 1}, itest_util:create_record(User2)).
+diff --git a/src/oc_erchef/apps/chef_db/src/chef_db.erl b/src/oc_erchef/apps/chef_db/src/chef_db.erl
+index f0c71e13a..14439e994 100644
+--- a/src/oc_erchef/apps/chef_db/src/chef_db.erl
++++ b/src/oc_erchef/apps/chef_db/src/chef_db.erl
+@@ -166,8 +166,8 @@ create(ObjectRec0, #context{server_api_version = ApiVersion, reqid = ReqId}, Act
+     Fields = chef_object:fields_for_insert(ObjectRec2),
+     case stats_hero:ctime(ReqId, {chef_sql, create_object},
+                           fun() -> chef_sql:create_object(QueryName, Fields) end) of
+-        {ok,[[{<<"add_user">>,<<>>}]]} -> ok;
+         {ok, 1} -> ok;
++        {ok, 0} -> <<"Record not created '", ObjectRec2/binary, "'.">>;
+         {conflict, Msg}-> {conflict, Msg};
+         {error, Why} -> {error, Why}
+     end.
+@@ -258,7 +258,7 @@ update(#chef_cookbook_version{org_id =OrgId} = Record, #context{reqid = ReqId} =
+ update(ObjectRec, #context{reqid = ReqId}, ActorId) ->
+     case stats_hero:ctime(ReqId, {chef_sql, do_update},
+                           fun() -> chef_sql:update(ObjectRec, ActorId) end) of
+-        [[{<<"update_user">>, <<>>}]] -> ok;
++        0 -> {error, <<"Record not updated '", ObjectRec/binary, "'.">>};
+         N when is_integer(N), N > 0 -> ok;
+         not_found -> not_found;
+         {conflict, Message} -> {conflict, Message};
+diff --git a/src/oc_erchef/apps/chef_db/src/chef_sql.erl b/src/oc_erchef/apps/chef_db/src/chef_sql.erl
+index 415295cca..325985e54 100644
+--- a/src/oc_erchef/apps/chef_db/src/chef_sql.erl
++++ b/src/oc_erchef/apps/chef_db/src/chef_sql.erl
+@@ -1009,7 +1009,12 @@ create_object(insert_cookbook_artifact_version = QueryName, Args) when is_list(A
+ create_object(QueryName, Args) when QueryName =:= insert_user;
+                                     QueryName =:= insert_user_v0,
+                                     is_list(Args)  ->
+-    sqerl:select(QueryName, Args, count);
++   Foo = sqerl:select(QueryName, Args, first_as_scalar, [add_user]),
++   case Foo of
++        {ok, 1} -> {ok, 1};
++        {ok, 0} -> {error, <<"Record not created '", QueryName/binary, "'.">>};
++        Error -> Error
++    end;
+ create_object(QueryName, Args) when is_atom(QueryName), is_list(Args) ->
+     sqerl:statement(QueryName, Args, count);
+ create_object(QueryName, Record) when is_atom(QueryName) ->
+@@ -1091,9 +1096,9 @@ update(ObjectRec, ActorId) ->
+ do_update(QueryName, UpdateFields) when QueryName =:= update_user_by_id;
+                                         QueryName =:= update_user_by_id_v0,
+                                         is_list(UpdateFields)  ->
+-    case sqerl:select(QueryName, UpdateFields) of
+-        {ok, [[{<<"update_user">>, <<>>}]]} -> ok;
++    case sqerl:select(QueryName, UpdateFields, first_as_scalar, [update_user]) of
+         {ok, 1} -> {ok, 1};
++        {ok, 0} -> {error, <<"Record not updated '", QueryName/binary, "'.">>};
+         {ok, none} -> {ok, not_found};
+         Error ->
+             Error
+diff --git a/src/oc_erchef/apps/chef_objects/src/chef_user.erl b/src/oc_erchef/apps/chef_objects/src/chef_user.erl
+index b0fbb7bba..3a6f1ef99 100644
+--- a/src/oc_erchef/apps/chef_objects/src/chef_user.erl
++++ b/src/oc_erchef/apps/chef_objects/src/chef_user.erl
+@@ -46,6 +46,7 @@
+          set_updated/2,
+          set_api_version/2,
+          type_name/1,
++         update/2,
+          update_from_ejson/2,
+          validate_user_name/1,
+          serialized_field_value/2,
+@@ -62,7 +63,7 @@
+          update_query/1
+         ]).
+ 
+--mixin([{chef_object_default_callbacks, [ update/2 ]}]).
++%-mixin([{chef_object_default_callbacks, [ update/2 ]}]).
+ 
+ -behaviour(chef_object).
+ 
+@@ -376,6 +377,9 @@ set_password_data(#chef_user{}=User, {HashedPassword, Salt, HashType}) ->
+                        salt = Salt,
+                        hash_type = HashType}.
+ 
++update(Rec, CallbackFun) ->
++    CallbackFun({update_query(Rec), fields_for_update(Rec), {first_as_scalar, [update_user]}}).
++
+ %% @doc Return a new `chef_user()' record updated according to the specified EJSON
+ %% terms. This provides behavior similar to chef_objects:update_from_ejson()
+ -spec update_from_ejson(#chef_user{}, ejson_term()) -> #chef_user{}.
+diff --git a/src/oc_erchef/apps/chef_test/src/chef_test_db_helper.erl b/src/oc_erchef/apps/chef_test/src/chef_test_db_helper.erl
+index c48ffcb32..e8c55e29d 100644
+--- a/src/oc_erchef/apps/chef_test/src/chef_test_db_helper.erl
++++ b/src/oc_erchef/apps/chef_test/src/chef_test_db_helper.erl
+@@ -69,9 +69,10 @@ start_db(Config, DbName) ->
+ 
+     %% FIXME: we should fail explicitely here if any of the commands above
+     %% fail
+-    CmdsResult = chef_test_suite_helper:run_cmds(CMDS),
++    chef_test_suite_helper:run_cmds(CMDS),
+     % make sure it's seen in output, don't use lager.
+-    io:format(user, "db_start: ~n~p~n", [CmdsResult]),
++    %CmdsResult = chef_test_suite_helper:run_cmds(CMDS),
++    %io:format(user, "db_start: ~n~p~n", [CmdsResult]),
+ 
+     Statements = case ?config(statements, Config) of
+                      undefined ->
+diff --git a/src/oc_erchef/schema/deploy/create_and_update_users.sql b/src/oc_erchef/schema/deploy/create_and_update_users.sql
+index 7838ec7f5..3db5cb9aa 100644
+--- a/src/oc_erchef/schema/deploy/create_and_update_users.sql
++++ b/src/oc_erchef/schema/deploy/create_and_update_users.sql
+@@ -21,24 +21,29 @@ CREATE OR REPLACE FUNCTION add_user(p_id users.id%TYPE,
+                                     p_external_authentication_uid users.external_authentication_uid%TYPE,
+                                     p_recovery_authentication_enabled users.recovery_authentication_enabled%TYPE,
+                                     p_serialized_object users.serialized_object%TYPE,
+-                                    p_admin users.admin%TYPE) RETURNS void AS $$
++                                    p_admin users.admin%TYPE) RETURNS integer AS $$
++  DECLARE
++      inserteduser integer;
+   BEGIN
+-    INSERT INTO users
+-      (id, authz_id, username, email, public_key, hashed_password, salt, hash_type,
+-       last_updated_by, created_at, updated_at, external_authentication_uid,
+-       recovery_authentication_enabled, serialized_object, admin,
+-       pubkey_version)
+-    VALUES (p_id, p_authz_id, p_username, p_email, 'thisisnotakey',
+-       p_hashed_password, p_salt, p_hash_type, p_last_updated_by, p_created_at, p_updated_at,
+-       p_external_authentication_uid, p_recovery_authentication_enabled,
+-       p_serialized_object, p_admin, p_pubkey_version);
+     IF p_public_key != 'thisisnotakey' THEN
+       INSERT INTO keys
+         (id, key_name, public_key, key_version, created_at,  expires_at)
+       VALUES
+          (p_id, 'default', p_public_key, p_pubkey_version, now(), 'infinity'::timestamp);
+     END IF;
+-  END
++    WITH createduser AS
++      (INSERT INTO users
++        (id, authz_id, username, email, public_key, hashed_password, salt, hash_type,
++         last_updated_by, created_at, updated_at, external_authentication_uid,
++         recovery_authentication_enabled, serialized_object, admin,
++         pubkey_version)
++       VALUES (p_id, p_authz_id, p_username, p_email, 'thisisnotakey',
++         p_hashed_password, p_salt, p_hash_type, p_last_updated_by, p_created_at, p_updated_at,
++         p_external_authentication_uid, p_recovery_authentication_enabled,
++         p_serialized_object, p_admin, p_pubkey_version) RETURNING 1)
++      SELECT count(*) FROM createduser INTO inserteduser;
++      RETURN inserteduser;
++  END;
+ $$ LANGUAGE plpgsql;
+ 
+ DROP FUNCTION IF EXISTS update_user(integer,text,text,text,password_hash_type,text,text,boolean,text,text,character,timestamp without time zone,boolean,character);
+@@ -56,7 +61,9 @@ CREATE OR REPLACE FUNCTION update_user(p_pubkey_version users.pubkey_version%TYP
+                                        p_last_updated_by users.last_updated_by%TYPE,
+                                        p_updated_at users.updated_at%TYPE,
+                                        p_admin users.admin%TYPE,
+-                                       p_id character(32)) RETURNS void AS $update_user$
++                                       p_id character(32)) RETURNS integer AS $$
++    DECLARE
++      updateduser integer;
+     BEGIN
+     IF p_public_key != 'thisisnotakey' THEN
+       IF p_public_key IS NOT NULL THEN
+@@ -71,22 +78,25 @@ CREATE OR REPLACE FUNCTION update_user(p_pubkey_version users.pubkey_version%TYP
+        DELETE FROM keys WHERE id = p_id AND key_name = 'default';
+       END IF;
+     END IF;
+-    UPDATE users SET
+-      username = p_username,
+-      email = p_email,
+-      public_key = 'thisisnotakey',
+-      hashed_password = p_hashed_password,
+-      salt = p_salt,
+-      hash_type = p_hash_type,
+-      last_updated_by = p_last_updated_by,
+-      updated_at = p_updated_at,
+-      external_authentication_uid = p_external_authentication_uid,
+-      recovery_authentication_enabled = p_recovery_authentication_enabled,
+-      serialized_object = p_serialized_object,
+-      admin = p_admin,
+-      pubkey_version = p_pubkey_version
+-    WHERE id = p_id;
++    WITH changeduser AS
++      (UPDATE users SET
++        username = p_username,
++        email = p_email,
++        public_key = 'thisisnotakey',
++        hashed_password = p_hashed_password,
++        salt = p_salt,
++        hash_type = p_hash_type,
++        last_updated_by = p_last_updated_by,
++        updated_at = p_updated_at,
++        external_authentication_uid = p_external_authentication_uid,
++        recovery_authentication_enabled = p_recovery_authentication_enabled,
++        serialized_object = p_serialized_object,
++        admin = p_admin,
++        pubkey_version = p_pubkey_version
++      WHERE id = p_id RETURNING 1)
++    SELECT count(*) FROM changeduser INTO updateduser;
++    RETURN updateduser;
+    END
+-$update_user$ LANGUAGE plpgsql;
++$$ LANGUAGE plpgsql;
+ 
+ COMMIT;
