@@ -84,5 +84,5 @@
   0},
  {<<"webmachine">>,
   {git,"git://github.com/chef/webmachine",
-       {ref,"9b1ef29fd44ec115fd865fc8c23bf027513bcb44"}},
+       {ref,"1ebdd356b5a0909edf35247b45f37f5a21b73db6"}},
   1}].

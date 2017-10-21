@@ -212,6 +212,12 @@ describe "Sandboxes API Endpoint", :sandboxes do
       it 'should respond with 200 OK or 204 No Content' do
         should look_like({:status => [200, 204]})
       end
+
+      it 'response headers should not contain :content_length when response code is 204' do
+        response2 = upload_to_sandbox(file1, sandbox)
+        response2.code.should eq(204)
+        response2.headers.should_not include(:content_length)
+      end
     end
 
     context 'when committing a sandbox after uploading files' do
